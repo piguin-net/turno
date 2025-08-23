@@ -9,8 +9,7 @@
   <version>1.0-SNAPSHOT</version>
 
   <name>turno</name>
-  <!-- FIXME change it to the project's website -->
-  <url>http://www.example.com</url>
+  <url>https://github.com/piguin-net/turno</url>
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -47,7 +46,7 @@
           </descriptorRefs>
           <archive>
             <manifest>
-              <mainClass>com.example.UdpHolePunching</mainClass>
+              <mainClass>com.example.UdpConnectionManager</mainClass>
             </manifest>
           </archive>
         </configuration>
