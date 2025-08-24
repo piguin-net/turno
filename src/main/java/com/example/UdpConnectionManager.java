@@ -13,266 +13,319 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 public class UdpConnectionManager implements AutoCloseable
 {
-    private final DatagramChannel channel;
-    private final Thread receiver;
-    private final Thread keepalive;
-    private int interval = 1_000;
-    private int keepaliveTimeout = 3_000;
-    // private int connectionTimeout = 3 * 60_000;
+    private DatagramChannel channel;
+    private Thread receiver;
     private boolean active = false;
-    private List<Consumer<InetSocketAddress>> connectEventListener = new ArrayList<>();
-    private List<Consumer<InetSocketAddress>> disconnectEventListener = new ArrayList<>();
-    private List<Consumer<Pair<InetSocketAddress, byte[]>>> receiveEventListener = new ArrayList<>();
-    private List<Consumer<Pair<InetSocketAddress, Exception>>> errorEventListener = new ArrayList<>();
-    private Map<InetSocketAddress, Long> peers = new HashMap<>();
+    private List<Consumer<Exception>> errorEventListener = new ArrayList<>();
+    private Map<InetSocketAddress, UdpConnection> peers = new HashMap<>();
+
+    public static class UdpConnection implements AutoCloseable {
+        private final UdpConnectionManager manager;
+        private final InetSocketAddress addr;
+        private boolean active = false;
+        private Thread keepalive;
+        private int interval = 1_000;
+        private Supplier<ByteBuffer> generator = () -> ByteBuffer.allocate(0);
+        // private int connectionTimeout = 3 * 60_000;
+        private int keepaliveTimeout = 3_000;
+        private long last = -1 * new Date().getTime();
+
+        private List<Runnable> connectEventListener = new ArrayList<>();
+        private List<Runnable> disconnectEventListener = new ArrayList<>();
+        private List<Consumer<byte[]>> receiveEventListener = new ArrayList<>();
+        private List<Consumer<Exception>> errorEventListener = new ArrayList<>();
+
+        public UdpConnection(UdpConnectionManager manager, InetSocketAddress addr) {
+            this.manager = manager;
+            this.addr = addr;
+        }
+
+        public long last() {
+            return this.last;
+        }
+
+        public void send(byte[] data) throws IOException, InterruptedException {
+            ByteBuffer buffer = ByteBuffer.wrap(data);
+            this.connect();
+            this.manager.channel.send(buffer, this.addr);
+        }
+
+        public UdpConnection setKeepAliveInterval(int interval) {
+            this.interval = interval;
+            return this;
+        }
+        public UdpConnection setKeepAliveData(Supplier<ByteBuffer> generator) {
+            this.generator = generator;
+            return this;
+        }
+        public UdpConnection onConnect(Runnable listener) {
+            this.connectEventListener.add(listener);
+            return this;
+        }
+        public UdpConnection onDisconnect(Runnable listener) {
+            this.disconnectEventListener.add(listener);
+            return this;
+        }
+        public UdpConnection onReceive(Consumer<byte[]> listener) {
+            this.receiveEventListener.add(listener);
+            return this;
+        }
+        public UdpConnection onError(Consumer<Exception> listener) {
+            this.errorEventListener.add(listener);
+            return this;
+        }
+
+        public void connectAsync() throws InterruptedException {
+            if (this.manager.peers.containsKey(this.addr)) {
+                if (this.manager.peers.get(this.addr) == this) {
+                    return;
+                } else {
+                    this.manager.peers.get(this.addr).close();
+                }
+            }
+            this.manager.peers.put(this.addr, this);
+            this.last = -1 * new Date().getTime();
+            this.active = true;
+            this.keepalive = new Thread(() -> {
+                while (this.active) {
+                    try {
+                        long now = new Date().getTime();
+                        if (this.last > 0 && now - this.last > this.keepaliveTimeout) {
+                            this.disconnect();
+                        } else {
+                            try {
+                                this.manager.channel.send(this.generator.get(), this.addr);
+                            } catch (Exception e) {
+                                if (this.active) {
+                                    this.error(e);
+                                }
+                            }
+                        }
+                        Thread.sleep(this.interval);
+                    } catch (InterruptedException e) {
+                        if (this.active) {
+                            throw new RuntimeException(e);
+                        }
+                    }
+                }
+            }, "UdpConnectionManager KeepAliveThread");
+            this.keepalive.start();
+        }
+
+        public void connect() throws InterruptedException {
+            this.connectAsync();
+            while (this.last < 0) {
+                Thread.sleep(100);
+            }
+        }
+
+        public void disconnect() throws InterruptedException {
+            this.manager.peers.remove(this.addr);
+            this.active = false;
+            this.keepalive.join();
+            this.disconnectEventListener.forEach(
+                listener -> new Thread(
+                    () -> listener.run(),
+                    String.format(
+                        "UdpConnectionManager DisconnectEventListenerThread[%s:%d]",
+                        this.addr.getAddress().getHostAddress(),
+                        this.addr.getPort()
+                    )
+                ).start()
+            );
+        }
+
+        private void receive(byte[] data) {
+            if (this.last < 0) {
+                this.connectEventListener.forEach(
+                    listener -> new Thread(
+                        () -> listener.run(),
+                        String.format(
+                            "UdpConnectionManager ConnectEventListenerThread[%s:%d]",
+                            this.addr.getAddress().getHostAddress(),
+                            this.addr.getPort()
+                        )
+                    ).start()
+                );
+            }
+            this.last = new Date().getTime();
+            this.receiveEventListener.forEach(
+                listener -> new Thread(
+                    () -> listener.accept(data),
+                    String.format(
+                        "UdpConnectionManager ReceiveEventListenerThread[%s:%d]",
+                        this.addr.getAddress().getHostAddress(),
+                        this.addr.getPort()
+                    )
+                ).start()
+            );
+        }
+
+        private void error(Exception e) {
+            this.errorEventListener.forEach(
+                listener -> new Thread(
+                    () -> listener.accept(e),
+                    String.format(
+                        "UdpConnectionManager ErrorEventListenerThread[%s:%d]",
+                        this.addr.getAddress().getHostAddress(),
+                        this.addr.getPort()
+                    )
+                ).start()
+            );
+        }
+
+        @Override
+        public void close() throws InterruptedException {
+            this.disconnect();
+        }
+    }
 
     public UdpConnectionManager(Integer port) throws IOException {
         this.channel = DatagramChannel.open();
         this.channel.configureBlocking(false);
         this.channel.socket().bind(new InetSocketAddress(port));
+    }
+
+    public UdpConnectionManager onError(Consumer<Exception> listener) {
+        this.errorEventListener.add(listener);
+        return this;
+    }
+
+    public UdpConnection newConnection(InetSocketAddress addr) {
+        return new UdpConnection(this, addr);
+    }
+
+    public List<UdpConnection> getConnections() {
+        return new ArrayList<>(this.peers.values());
+    }
+
+    public UdpConnectionManager start() {
+        this.active = true;
         this.receiver = new Thread(() -> {
             while (this.active) {
                 try {
                     ByteBuffer buffer = ByteBuffer.allocate(65535);
                     SocketAddress socket = this.channel.receive(buffer);
-                    if (socket instanceof InetSocketAddress packet) {
-                        InetSocketAddress peer = new InetSocketAddress(
-                            packet.getAddress(),
-                            packet.getPort()
-                        );
-                        if (!peers.containsKey(peer) || peers.get(peer) < 0) {
-                            this.connectEventListener.forEach(
-                                listener -> new Thread(
-                                    () -> listener.accept(peer),
-                                    String.format(
-                                        "UdpHolePunching ConnectEventListenerThread[%s:%d]",
-                                        peer.getAddress().getHostAddress(),
-                                        peer.getPort()
-                                    )
-                                ).start()
-                            );
+                    if (socket instanceof InetSocketAddress addr) {
+                        // TODO: 知らない接続元
+                        if (!peers.containsKey(addr)) {
+                            new UdpConnection(this, addr).connectAsync();
                         }
-                        peers.put(peer, new Date().getTime());
                         if (buffer.flip().limit() > 0) {
                             byte[] data = new byte[buffer.limit()];
                             buffer.get(data);
-                            this.receiveEventListener.stream().forEach(
-                                listener -> new Thread(
-                                    () -> listener.accept(Pair.of(
-                                        new InetSocketAddress(packet.getAddress(), packet.getPort()),
-                                        data
-                                    )),
-                                    String.format(
-                                        "UdpHolePunching ReceiveEventListenerThread[%s:%d]",
-                                        peer.getAddress().getHostAddress(),
-                                        peer.getPort()
-                                    )
-                                ).start()
-                            );
+                            peers.get(addr).receive(data);
+                        } else {
+                            peers.get(addr).receive(new byte[]{});
                         }
                     }
                     Thread.sleep(1);
                 } catch (Exception e) {
                     if (this.active) {
-                        this.errorEventListener.stream().forEach(
+                        this.errorEventListener.forEach(
                             listener -> new Thread(
-                                () -> listener.accept(Pair.of(null, e)),
-                                "UdpHolePunching ErrorEventListenerThread"
+                                () -> listener.accept(e),
+                                "UdpConnectionManager ErrorEventListenerThread"
                             ).start()
                         );
                     }
                 }
             }
-        }, "UdpHolePunching ReceiverThread");
-        this.keepalive = new Thread(() -> {
-            while (this.active) {
-                List<Entry<InetSocketAddress, Long>> entries = this.peers.entrySet().stream().filter(
-                    entry -> entry.getValue() > 0
-                ).filter(
-                    entry -> new Date().getTime() - entry.getValue() > this.keepaliveTimeout
-                ).toList();
-                entries.forEach(
-                    entry -> {
-                        this.peers.remove(entry.getKey());
-                        this.disconnectEventListener.forEach(
-                            listener -> new Thread(
-                                () -> listener.accept(entry.getKey()),
-                                String.format(
-                                    "UdpHolePunching DisconnectEventListenerThread[%s:%d]",
-                                    entry.getKey().getAddress().getHostAddress(),
-                                    entry.getKey().getPort()
-                                )
-                            ).start()
-                        );
-                    }
-                );
-                this.peers.keySet().forEach(peer -> {
-                    try {
-                        this.channel.send(ByteBuffer.allocate(0), peer);
-                    } catch (Exception e) {
-                        if (this.active) {
-                            this.errorEventListener.stream().forEach(
-                                listener -> new Thread(
-                                    () -> listener.accept(Pair.of(peer, e)),
-                                    String.format(
-                                        "UdpHolePunching ErrorEventListenerThread[%s:%d]",
-                                        peer.getAddress().getHostAddress(),
-                                        peer.getPort()
-                                    )
-                                ).start()
-                            );
-                        }
-                    }
-                });
-                try {
-                    Thread.sleep(this.interval);
-                } catch (InterruptedException e) {
-                    if (this.active) {
-                        throw new RuntimeException(e);
-                    }
-                }
-            }
-        }, "UdpHolePunching KeepAliveThread");
-    }
-
-    public void start() {
-        this.active = true;
+        }, "UdpConnectionManager ReceiverThread");
         this.receiver.start();
-        this.keepalive.start();
-    }
-
-    public UdpConnectionManager setKeepAliveInterval(int interval) {
-        this.interval = interval;
         return this;
-    }
-
-    public UdpConnectionManager onConnect(Consumer<InetSocketAddress> listener) {
-        this.connectEventListener.add(listener);
-        return this;
-    }
-
-    public UdpConnectionManager onDisconnect(Consumer<InetSocketAddress> listener) {
-        this.disconnectEventListener.add(listener);
-        return this;
-    }
-
-    public UdpConnectionManager onReceive(Consumer<Pair<InetSocketAddress, byte[]>> listener) {
-        this.receiveEventListener.add(listener);
-        return this;
-    }
-
-    public UdpConnectionManager onError(Consumer<Pair<InetSocketAddress, Exception>> listener) {
-        this.errorEventListener.add(listener);
-        return this;
-    }
-
-    public void connectAsync(InetSocketAddress peer) throws InterruptedException {
-        if (!this.peers.containsKey(peer)) {
-            this.peers.put(peer, -1 * new Date().getTime());
-        }
-    }
-
-    public void connect(InetSocketAddress peer) throws InterruptedException {
-        this.connectAsync(peer);
-        while (this.peers.get(peer) < 0) {
-            Thread.sleep(100);
-        }
-    }
-
-    public void disconnect(InetSocketAddress peer) {
-        this.peers.remove(peer);
-    }
-
-    public void send(byte[] data, InetSocketAddress peer) throws IOException, InterruptedException {
-        ByteBuffer buffer = ByteBuffer.wrap(data);
-        this.connect(peer);
-        this.channel.send(buffer, peer);
-    }
-
-    public void send(byte[] data) throws IOException, InterruptedException {
-        for (InetSocketAddress peer: this.peers.keySet()) {
-            ByteBuffer buffer = ByteBuffer.wrap(data);
-            this.connect(peer);
-            this.channel.send(buffer, peer);
-        }
     }
 
     @Override
     public void close() throws Exception {
         this.active = false;
-        this.channel.close();
         this.receiver.join();
-        this.keepalive.join();
+        for (UdpConnection peer: this.peers.values()) {
+            peer.close();
+        }
+        this.channel.close();
     }
 
     public static void main( String[] args ) throws Exception
     {
-        Integer port = Integer.getInteger("p2p.port", 9625);
+        // Integer port = Integer.getInteger("p2p.port", 9625);
+        Integer port = Integer.getInteger("p2p.port", 12345);
         Integer interval = Integer.getInteger("p2p.keepalive.interval", 1000);
 
-        try (UdpConnectionManager p2p = new UdpConnectionManager(port);) {
-            p2p.setKeepAliveInterval(
-                interval
-            ).onConnect(peer -> {
+        try (UdpConnectionManager manager = new UdpConnectionManager(port);) {
+            manager.onError((e) -> {
                 System.out.println(String.format(
-                    "[onConnect] %s:%d",
-                    peer.getAddress().getHostAddress(),
-                    peer.getPort()
+                    "%tT [onError] %s(%s)",
+                    new Date(),
+                    e.getClass().getName(),
+                    e.getMessage()
                 ));
-            }).onDisconnect(peer -> {
-                System.out.println(String.format(
-                    "[onDisconnect] %s:%d retry...",
-                    peer.getAddress().getHostAddress(),
-                    peer.getPort()
-                ));
-                try {
-                    p2p.connect(peer);
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-            }).onReceive(receive -> {
-                String message = new String(receive.getValue());
-                System.out.println(String.format(
-                    "[onReceive] %s:%d %s",
-                    receive.getKey().getAddress(),
-                    receive.getKey().getPort(),
-                    message
-                ));
-            }).onError(pair -> {
-                if (pair.getKey() == null) {
-                    System.out.println(String.format(
-                        "[onError] %s(%s)",
-                        pair.getValue().getClass().getName(),
-                        pair.getValue().getMessage()
-                    ));
-                } else {
-                    System.out.println(String.format(
-                        "[onError] %s:%d %s(%s)",
-                        pair.getKey().getAddress().getHostAddress(),
-                        pair.getKey().getPort(),
-                        pair.getValue().getClass().getName(),
-                        pair.getValue().getMessage()
-                    ));
-                }
-            }).start();
+            });
+            manager.start();
 
             for (String arg: args) {
                 InetSocketAddress addr = new InetSocketAddress(arg, port);
-                p2p.connect(addr);
+
+                UdpConnection connection = manager.newConnection(addr);
+                connection.setKeepAliveInterval(
+                    interval
+                ).setKeepAliveData(
+                    () -> ByteBuffer.allocate(0)
+                ).onConnect(() -> {
+                    System.out.println(String.format(
+                        "%tT [onConnect] %s:%d",
+                        new Date(),
+                        addr.getAddress().getHostAddress(),
+                        addr.getPort()
+                    ));
+                }).onDisconnect(() -> {
+                    System.out.println(String.format(
+                        "%tT [onDisconnect] %s:%d retry...",
+                        new Date(),
+                        addr.getAddress().getHostAddress(),
+                        addr.getPort()
+                    ));
+                    try {
+                        // TODO: KeepAliveThreadが増殖している
+                        // TODO: 再接続後に受信できていない
+                        connection.connect();
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                }).onReceive(data -> {
+                    if (data.length > 0) {
+                        String message = new String(data);
+                        System.out.println(String.format(
+                            "%tT [onReceive] %s:%d %s",
+                            new Date(),
+                            addr.getAddress().getHostAddress(),
+                            addr.getPort(),
+                            message
+                        ));
+                    }
+                }).onError(e -> {
+                    System.out.println(String.format(
+                        "%tT [onError] %s:%d %s(%s)",
+                        new Date(),
+                        addr.getAddress().getHostAddress(),
+                        addr.getPort(),
+                        e.getClass().getName(),
+                        e.getMessage()
+                    ));
+                }).connect();
             }
 
             try (BufferedReader input = new BufferedReader(new InputStreamReader(System.in));) {
                 while (true) {
                     String message = input.readLine();
                     if (message == null || "".equals(message.trim())) break;
-                    for (String arg: args) {
-                        InetSocketAddress addr = new InetSocketAddress(arg, port);
-                        p2p.send(message.getBytes(Charset.defaultCharset()), addr);
+                    for (UdpConnection peer: manager.getConnections()) {
+                        peer.send(message.getBytes(Charset.defaultCharset()));
                     }
                 }
             } catch (Exception e) {
