@@ -127,7 +127,6 @@ public class UdpConnectionManager implements AutoCloseable
         public void disconnect() throws InterruptedException {
             this.manager.peers.remove(this.addr);
             this.active = false;
-            this.keepalive.join();
             this.disconnectEventListener.forEach(
                 listener -> new Thread(
                     () -> listener.run(),
@@ -182,6 +181,7 @@ public class UdpConnectionManager implements AutoCloseable
         @Override
         public void close() throws InterruptedException {
             this.disconnect();
+            this.keepalive.join();
         }
     }
 
@@ -292,7 +292,6 @@ public class UdpConnectionManager implements AutoCloseable
                     ));
                     try {
                         // TODO: KeepAliveThreadが増殖している
-                        // TODO: 再接続後に受信できていない
                         connection.connect();
                     } catch (InterruptedException e) {
                         e.printStackTrace();
