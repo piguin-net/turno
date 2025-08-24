@@ -25,13 +25,6 @@ import java.util.function.Supplier;
 
 public class UdpConnectionManager implements AutoCloseable
 {
-    private DatagramChannel channel;
-    private Thread receiver;
-    private boolean active = false;
-    private List<Consumer<Entry<InetSocketAddress, byte[]>>> receiveEventListener = new ArrayList<>();
-    private List<Consumer<Exception>> errorEventListener = new ArrayList<>();
-    private Map<InetSocketAddress, UdpConnection> peers = new HashMap<>();
-
     public static class UdpConnection implements AutoCloseable {
         private final UdpConnectionManager manager;
         private final InetSocketAddress addr;
@@ -221,6 +214,13 @@ public class UdpConnectionManager implements AutoCloseable
         }
     }
 
+    private DatagramChannel channel;
+    private Thread receiver;
+    private boolean active = false;
+    private List<Consumer<Entry<InetSocketAddress, byte[]>>> receiveEventListener = new ArrayList<>();
+    private List<Consumer<Exception>> errorEventListener = new ArrayList<>();
+    private Map<InetSocketAddress, UdpConnection> peers = new HashMap<>();
+
     public UdpConnectionManager() throws IOException {
         this.channel = DatagramChannel.open();
         this.channel.configureBlocking(false);
@@ -238,20 +238,6 @@ public class UdpConnectionManager implements AutoCloseable
         return this;
     }
 
-    public UdpConnectionManager onReceive(Consumer<Entry<InetSocketAddress, byte[]>> listener) {
-        this.receiveEventListener.add(listener);
-        return this;
-    }
-
-    public UdpConnectionManager onError(Consumer<Exception> listener) {
-        this.errorEventListener.add(listener);
-        return this;
-    }
-
-    public UdpConnection newConnection(InetSocketAddress addr) {
-        return new UdpConnection(this, addr);
-    }
-
     public List<UdpConnection> getAllConnections() {
         return new ArrayList<>(this.peers.values());
     }
@@ -264,6 +250,20 @@ public class UdpConnectionManager implements AutoCloseable
         ).filter(
             peer -> !peer.isKeepAliveTimeout()
         ).toList();
+    }
+
+    public UdpConnectionManager onReceive(Consumer<Entry<InetSocketAddress, byte[]>> listener) {
+        this.receiveEventListener.add(listener);
+        return this;
+    }
+
+    public UdpConnectionManager onError(Consumer<Exception> listener) {
+        this.errorEventListener.add(listener);
+        return this;
+    }
+
+    public UdpConnection newConnection(InetSocketAddress addr) {
+        return new UdpConnection(this, addr);
     }
 
     public UdpConnectionManager start() {
