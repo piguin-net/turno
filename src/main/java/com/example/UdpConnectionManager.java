@@ -231,11 +231,17 @@ public class UdpConnectionManager implements AutoCloseable
         return this;
     }
 
-    public UdpConnectionManager joinGroup(InetAddress group) throws UnknownHostException, IOException {
+    public int getPort() {
+        return this.channel.socket().getLocalPort();
+    }
+
+    public UdpConnection joinGroup(InetAddress group) throws UnknownHostException, IOException {
         for (NetworkInterface nic: getSiteLocalNetworkInterfaces().keySet()) {
             this.channel.join(group, nic);
         }
-        return this;
+        UdpConnection connection = this.newConnection(new InetSocketAddress(group, this.getPort()));
+        connection.last = Long.MAX_VALUE;  // TODO: 汚い
+        return connection;
     }
 
     public List<UdpConnection> getAllConnections() {
@@ -340,19 +346,11 @@ public class UdpConnectionManager implements AutoCloseable
         Integer port = Integer.getInteger("p2p.port", 9625);
         Integer interval = Integer.getInteger("p2p.keepalive.interval", 1000);
 
-        try (UdpConnectionManager manager = new UdpConnectionManager();) {
-            manager.setPort(
-                port
-            ).joinGroup(
-                InetAddress.getByName("224.0.0.1")
-            ).onReceive(entry -> {
-                System.out.println(String.format(
-                    "%tT [onReceive] %s:%d",
-                    new Date(),
-                    entry.getKey().getAddress().getHostAddress(),
-                    entry.getKey().getPort()
-                ));
-            }).onError((e) -> {
+        try (
+            UdpConnectionManager manager = new UdpConnectionManager();
+            UdpConnectionManager multicast = new UdpConnectionManager();
+        ) {
+            manager.onError((e) -> {
                 System.out.println(String.format(
                     "%tT [onError] %s(%s)",
                     new Date(),
@@ -361,57 +359,92 @@ public class UdpConnectionManager implements AutoCloseable
                 ));
             }).start();
 
-            for (String arg: args) {
-                InetSocketAddress addr = new InetSocketAddress(arg, port);
-                manager.newConnection(addr).setKeepAliveInterval(
-                    interval
-                ).setKeepAliveData(
-                    () -> ByteBuffer.allocate(0)
-                ).onConnect(instance -> {
-                    System.out.println(String.format(
-                        "%tT [onConnect] %s:%d",
-                        new Date(),
-                        addr.getAddress().getHostAddress(),
-                        addr.getPort()
-                    ));
-                }).onKeepAliveTimeout(instance -> {
-                    System.out.println(String.format(
-                        "%tT [onKeepAliveTimeout] %s:%d retry...",
-                        new Date(),
-                        addr.getAddress().getHostAddress(),
-                        addr.getPort()
-                    ));
-                }).onDisconnect(instance -> {
-                    System.out.println(String.format(
-                        "%tT [onDisconnect] %s:%d retry...",
-                        new Date(),
-                        addr.getAddress().getHostAddress(),
-                        addr.getPort()
-                    ));
-                }).onReceive(data -> {
-                    if (data.length > 0) {
-                        String message = new String(data);
+            // TODO: 汚い
+            multicast.setPort(
+                port
+            ).onReceive(entry -> {
+                if (entry.getValue().length == 4) {
+                    InetSocketAddress addr = new InetSocketAddress(
+                        entry.getKey().getAddress(),
+                        ByteBuffer.wrap(entry.getValue()).getInt()
+                    );
+                    if (!manager.getAllConnections().stream().anyMatch(conn -> conn.addr.equals(addr))) {
                         System.out.println(String.format(
-                            "%tT [onReceive] %s:%d %s",
+                            "%tT [onBeaconReceive] %s:%d -> %s:%d",
                             new Date(),
+                            entry.getKey().getAddress().getHostAddress(),
+                            entry.getKey().getPort(),
                             addr.getAddress().getHostAddress(),
-                            addr.getPort(),
-                            message
+                            addr.getPort()
                         ));
-                    } else {
-                        // keepalive
+                        try {
+                            manager.newConnection(addr).setKeepAliveInterval(
+                                interval
+                            ).setKeepAliveData(
+                                () -> ByteBuffer.allocate(0)
+                            ).onConnect(instance -> {
+                                System.out.println(String.format(
+                                    "%tT [onConnect] %s:%d",
+                                    new Date(),
+                                    addr.getAddress().getHostAddress(),
+                                    addr.getPort()
+                                ));
+                            }).onKeepAliveTimeout(instance -> {
+                                System.out.println(String.format(
+                                    "%tT [onKeepAliveTimeout] %s:%d retry...",
+                                    new Date(),
+                                    addr.getAddress().getHostAddress(),
+                                    addr.getPort()
+                                ));
+                            }).onDisconnect(instance -> {
+                                System.out.println(String.format(
+                                    "%tT [onDisconnect] %s:%d retry...",
+                                    new Date(),
+                                    addr.getAddress().getHostAddress(),
+                                    addr.getPort()
+                                ));
+                            }).onReceive(data -> {
+                                if (data.length > 0) {
+                                    String message = new String(data);
+                                    System.out.println(String.format(
+                                        "%tT [onReceive] %s:%d %s",
+                                        new Date(),
+                                        addr.getAddress().getHostAddress(),
+                                        addr.getPort(),
+                                        message
+                                    ));
+                                } else {
+                                    // keepalive
+                                }
+                            }).onError(error -> {
+                                System.out.println(String.format(
+                                    "%tT [onError] %s:%d %s(%s)",
+                                    new Date(),
+                                    addr.getAddress().getHostAddress(),
+                                    addr.getPort(),
+                                    error.getClass().getName(),
+                                    error.getMessage()
+                                ));
+                            }).connect();
+                        } catch (InterruptedException e1) {
+                            e1.printStackTrace();
+                        }
                     }
-                }).onError(error -> {
-                    System.out.println(String.format(
-                        "%tT [onError] %s:%d %s(%s)",
-                        new Date(),
-                        addr.getAddress().getHostAddress(),
-                        addr.getPort(),
-                        error.getClass().getName(),
-                        error.getMessage()
-                    ));
-                }).connect();
-            }
+                }
+            }).onError((e) -> {
+                System.out.println(String.format(
+                    "%tT [onError] %s(%s)",
+                    new Date(),
+                    e.getClass().getName(),
+                    e.getMessage()
+                ));
+            }).start().joinGroup(
+                InetAddress.getByName("224.0.0.1")
+            ).setKeepAliveData(
+                () -> {
+                    return ByteBuffer.allocate(4).putInt(manager.getPort()).flip();
+                }
+            ).connectAsync();
 
             try (BufferedReader input = new BufferedReader(new InputStreamReader(System.in));) {
                 while (true) {
