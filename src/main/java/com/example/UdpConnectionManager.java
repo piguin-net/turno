@@ -3,16 +3,23 @@ package com.example;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.InterfaceAddress;
+import java.net.NetworkInterface;
 import java.net.SocketAddress;
+import java.net.SocketException;
+import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
 import java.nio.charset.Charset;
 import java.util.Date;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -21,6 +28,7 @@ public class UdpConnectionManager implements AutoCloseable
     private DatagramChannel channel;
     private Thread receiver;
     private boolean active = false;
+    private List<Consumer<Entry<InetSocketAddress, byte[]>>> receiveEventListener = new ArrayList<>();
     private List<Consumer<Exception>> errorEventListener = new ArrayList<>();
     private Map<InetSocketAddress, UdpConnection> peers = new HashMap<>();
 
@@ -213,10 +221,26 @@ public class UdpConnectionManager implements AutoCloseable
         }
     }
 
-    public UdpConnectionManager(Integer port) throws IOException {
+    public UdpConnectionManager() throws IOException {
         this.channel = DatagramChannel.open();
         this.channel.configureBlocking(false);
+    }
+
+    public UdpConnectionManager setPort(int port) throws SocketException {
         this.channel.socket().bind(new InetSocketAddress(port));
+        return this;
+    }
+
+    public UdpConnectionManager joinGroup(InetAddress group) throws UnknownHostException, IOException {
+        for (NetworkInterface nic: getSiteLocalNetworkInterfaces().keySet()) {
+            this.channel.join(group, nic);
+        }
+        return this;
+    }
+
+    public UdpConnectionManager onReceive(Consumer<Entry<InetSocketAddress, byte[]>> listener) {
+        this.receiveEventListener.add(listener);
+        return this;
     }
 
     public UdpConnectionManager onError(Consumer<Exception> listener) {
@@ -250,10 +274,20 @@ public class UdpConnectionManager implements AutoCloseable
                     ByteBuffer buffer = ByteBuffer.allocate(65535);
                     SocketAddress socket = this.channel.receive(buffer);
                     if (socket instanceof InetSocketAddress addr) {
+                        byte[] data = new byte[buffer.flip().limit()];
+                        buffer.get(data);
                         if (peers.containsKey(addr)) {
-                            byte[] data = new byte[buffer.flip().limit()];
-                            buffer.get(data);
                             peers.get(addr).receive(data);
+                        } else {
+                            // TODO: 送信元ではなく送信先アドレスを知るすべが無いか
+                            // group宛なのか、firewallが許可されてて知らない相手から届いたのか、
+                            // 判断できない
+                            this.receiveEventListener.forEach(
+                                listener -> new Thread(
+                                    () -> listener.accept(Map.entry(addr, data)),
+                                    "UdpConnectionManager ErrorEventListenerThread"
+                                ).start()
+                            );
                         }
                     }
                     Thread.sleep(1);
@@ -283,21 +317,44 @@ public class UdpConnectionManager implements AutoCloseable
         this.channel.close();
     }
 
+    private static Map<NetworkInterface, List<String>> getSiteLocalNetworkInterfaces() throws SocketException {
+        Map<NetworkInterface, List<String>> nics = new HashMap<>();
+        for (NetworkInterface nic: Collections.list(NetworkInterface.getNetworkInterfaces())) {
+            for (InterfaceAddress addr: nic.getInterfaceAddresses()) {
+                if (addr.getAddress().isSiteLocalAddress()) {
+                    if (!nics.containsKey(nic)) nics.put(nic, new ArrayList<>());
+                    nics.get(nic).add(addr.getAddress().getHostAddress());
+                }
+            }
+        }
+        return nics;
+    }
+
     public static void main( String[] args ) throws Exception
     {
         Integer port = Integer.getInteger("p2p.port", 9625);
         Integer interval = Integer.getInteger("p2p.keepalive.interval", 1000);
 
-        try (UdpConnectionManager manager = new UdpConnectionManager(port);) {
-            manager.onError((e) -> {
+        try (UdpConnectionManager manager = new UdpConnectionManager();) {
+            manager.setPort(
+                port
+            ).joinGroup(
+                InetAddress.getByName("224.0.0.1")
+            ).onReceive(entry -> {
+                System.out.println(String.format(
+                    "%tT [onReceive] %s:%d",
+                    new Date(),
+                    entry.getKey().getAddress().getHostAddress(),
+                    entry.getKey().getPort()
+                ));
+            }).onError((e) -> {
                 System.out.println(String.format(
                     "%tT [onError] %s(%s)",
                     new Date(),
                     e.getClass().getName(),
                     e.getMessage()
                 ));
-            });
-            manager.start();
+            }).start();
 
             for (String arg: args) {
                 InetSocketAddress addr = new InetSocketAddress(arg, port);
