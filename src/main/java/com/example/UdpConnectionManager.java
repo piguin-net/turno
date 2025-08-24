@@ -282,12 +282,17 @@ public class UdpConnectionManager implements AutoCloseable
                             // TODO: 送信元ではなく送信先アドレスを知るすべが無いか
                             // group宛なのか、firewallが許可されてて知らない相手から届いたのか、
                             // 判断できない
+                            boolean self = getSiteLocalNetworkInterfaces().values().stream().anyMatch(
+                                addrs -> addrs.contains(addr.getAddress().getHostAddress())
+                            );
+                            if (!self) {
                             this.receiveEventListener.forEach(
                                 listener -> new Thread(
                                     () -> listener.accept(Map.entry(addr, data)),
                                     "UdpConnectionManager ErrorEventListenerThread"
                                 ).start()
                             );
+                            }
                         }
                     }
                     Thread.sleep(1);
