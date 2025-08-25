@@ -35,6 +35,11 @@ public class UdpConnectionManager implements AutoCloseable
     private List<Consumer<InetSocketAddress>> disconnectEventListener = new ArrayList<>();
     private List<Consumer<Entry<InetSocketAddress, byte[]>>> receiveEventListener = new ArrayList<>();
     private List<Consumer<Entry<InetSocketAddress, Exception>>> errorEventListener = new ArrayList<>();
+    private Map<InetSocketAddress, Consumer<InetSocketAddress>> connectEventListeners = new HashMap<>();
+    private Map<InetSocketAddress, Consumer<InetSocketAddress>> keepaliveTimeoutEventListeners = new HashMap<>();
+    private Map<InetSocketAddress, Consumer<InetSocketAddress>> disconnectEventListeners = new HashMap<>();
+    private Map<InetSocketAddress, Consumer<Entry<InetSocketAddress, byte[]>>> receiveEventListeners = new HashMap<>();
+    private Map<InetSocketAddress, Consumer<Entry<InetSocketAddress, Exception>>> errorEventListeners = new HashMap<>();
     private List<Consumer<Exception>> globalErrorEventListener = new ArrayList<>();
 
     private final Thread receiver = new Thread(() -> {
@@ -130,76 +135,99 @@ public class UdpConnectionManager implements AutoCloseable
         this.errorEventListener.add(listener);
         return this;
     }
+    public UdpConnectionManager onConnect(InetSocketAddress addr, Consumer<InetSocketAddress> listener) {
+        this.connectEventListeners.put(addr, listener);
+        return this;
+    }
+    public UdpConnectionManager onKeepAliveTimeout(InetSocketAddress addr, Consumer<InetSocketAddress> listener) {
+        this.keepaliveTimeoutEventListeners.put(addr, listener);
+        return this;
+    }
+    public UdpConnectionManager onDisconnect(InetSocketAddress addr, Consumer<InetSocketAddress> listener) {
+        this.disconnectEventListeners.put(addr, listener);
+        return this;
+    }
+    public UdpConnectionManager onReceive(InetSocketAddress addr, Consumer<Entry<InetSocketAddress, byte[]>> listener) {
+        this.receiveEventListeners.put(addr, listener);
+        return this;
+    }
+    public UdpConnectionManager onError(InetSocketAddress addr, Consumer<Entry<InetSocketAddress, Exception>> listener) {
+        this.errorEventListeners.put(addr, listener);
+        return this;
+    }
     public UdpConnectionManager onGlobalError(Consumer<Exception> listener) {
         this.globalErrorEventListener.add(listener);
         return this;
     }
     private void dispatchConnectEventListener(InetSocketAddress addr) {
-        this.connectEventListener.forEach(
-            listener -> new Thread(
-                () -> listener.accept(addr),
-                String.format(
-                    "UdpConnectionManager ConnectEventListenerThread(%s:%d)",
-                    addr.getAddress().getHostAddress(),
-                    addr.getPort()
-                )
-            ).start()
+        String name = String.format(
+            "UdpConnectionManager ConnectEventListenerThread(%s:%d)",
+            addr.getAddress().getHostAddress(),
+            addr.getPort()
         );
+        this.connectEventListener.forEach(
+            listener -> new Thread(() -> listener.accept(addr), name).start()
+        );
+        if (this.connectEventListeners.containsKey(addr)) {
+            new Thread(() -> this.connectEventListeners.get(addr).accept(addr), name).start();
+        }
     }
     private void dispatchKeepAliveTimeoutEventListener(InetSocketAddress addr) {
-        this.keepaliveTimeoutEventListener.forEach(
-            listener -> new Thread(
-                () -> listener.accept(addr),
-                String.format(
-                    "UdpConnectionManager KeepaliveTimeoutEventListenerThread(%s:%d)",
-                    addr.getAddress().getHostAddress(),
-                    addr.getPort()
-                )
-            ).start()
+        String name = String.format(
+            "UdpConnectionManager KeepaliveTimeoutEventListenerThread(%s:%d)",
+            addr.getAddress().getHostAddress(),
+            addr.getPort()
         );
+        this.keepaliveTimeoutEventListener.forEach(
+            listener -> new Thread(() -> listener.accept(addr), name).start()
+        );
+        if (this.keepaliveTimeoutEventListeners.containsKey(addr)) {
+            new Thread(() -> this.keepaliveTimeoutEventListeners.get(addr).accept(addr), name).start();
+        }
     }
     private void dispatchDisconnectEventListener(InetSocketAddress addr) {
-        this.disconnectEventListener.forEach(
-            listener -> new Thread(
-                () -> listener.accept(addr),
-                String.format(
-                    "UdpConnectionManager DisconnectEventListenerThread(%s:%d)",
-                    addr.getAddress().getHostAddress(),
-                    addr.getPort()
-                )
-            ).start()
+        String name = String.format(
+            "UdpConnectionManager DisconnectEventListenerThread(%s:%d)",
+            addr.getAddress().getHostAddress(),
+            addr.getPort()
         );
+        this.disconnectEventListener.forEach(
+            listener -> new Thread(() -> listener.accept(addr), name).start()
+        );
+        if (this.disconnectEventListeners.containsKey(addr)) {
+            new Thread(() -> this.disconnectEventListeners.get(addr).accept(addr), name).start();
+        }
     }
     private void dispatchReceiveEventListener(InetSocketAddress addr, byte[] data) {
-        this.receiveEventListener.forEach(
-            listener -> new Thread(
-                () -> listener.accept(Map.entry(addr, data)),
-                String.format(
-                    "UdpConnectionManager ReceiveEventListenerThread(%s:%d)",
-                    addr.getAddress().getHostAddress(),
-                    addr.getPort()
-                )
-            ).start()
+        String name = String.format(
+            "UdpConnectionManager ReceiveEventListenerThread(%s:%d)",
+            addr.getAddress().getHostAddress(),
+            addr.getPort()
         );
+        this.receiveEventListener.forEach(
+            listener -> new Thread(() -> listener.accept(Map.entry(addr, data)), name).start()
+        );
+        if (this.receiveEventListeners.containsKey(addr)) {
+            new Thread(() -> this.receiveEventListeners.get(addr).accept(Map.entry(addr, data)), name).start();
+        }
     }
     private void dispatchErrorEventListener(InetSocketAddress addr, Exception e) {
-        this.errorEventListener.forEach(
-            listener -> new Thread(
-                () -> listener.accept(Map.entry(addr, e)),
-                String.format(
-                    "UdpConnectionManager ErrorEventListenerThread(%s:%d)",
-                    addr.getAddress().getHostAddress(),
-                    addr.getPort()
-                )
-            ).start()
+        String name = String.format(
+            "UdpConnectionManager ErrorEventListenerThread(%s:%d)",
+            addr.getAddress().getHostAddress(),
+            addr.getPort()
         );
+        this.errorEventListener.forEach(
+            listener -> new Thread(() -> listener.accept(Map.entry(addr, e)), name).start()
+        );
+        if (this.errorEventListeners.containsKey(addr)) {
+            new Thread(() -> this.errorEventListeners.get(addr).accept(Map.entry(addr, e)), name).start();
+        }
     }
     private void dispatchErrorEventListener(Exception e) {
+        String name = "UdpConnectionManager ErrorEventListenerThread";
         this.globalErrorEventListener.forEach(
-            listener -> new Thread(
-                () -> listener.accept(e),
-                "UdpConnectionManager ErrorEventListenerThread"
-            ).start()
+            listener -> new Thread(() -> listener.accept(e), name).start()
         );
     }
 
