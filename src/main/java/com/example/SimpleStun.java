@@ -159,7 +159,7 @@ public class SimpleStun {
      */
     public static InetSocketAddress parseResponse(ByteBuffer response) throws UnknownHostException {
         short messageType = response.getShort();
-        int messageLength = ushort2int(response.getShort());
+        int messageLength = Utils.ushort2int(response.getShort());
         if (messageType == MessageType.BINDING_SUCCESS_RESPONSE.value()) {
             int cookie = response.getInt();
             byte[] tran = new byte[96 / 8];
@@ -167,10 +167,10 @@ public class SimpleStun {
             int limit = response.position() + messageLength;
             while (response.position() < limit) {
                 AttributeType attributeType = AttributeType.of(response.getShort());
-                int attributeLength = ushort2int(response.getShort());
+                int attributeLength = Utils.ushort2int(response.getShort());
                 if (attributeType != null) {
                     MappedAddressFamily family = MappedAddressFamily.of(response.getShort());
-                    int port = ushort2int(response.getShort());
+                    int port = Utils.ushort2int(response.getShort());
                     if (family != null) {
                         byte[] addr = new byte[family.length()];
                         response.get(addr);
@@ -191,23 +191,6 @@ public class SimpleStun {
             }
         }
         return null;
-    }
-
-    private static int ushort2int(short value) {
-        return (value < 0 ? 1 + Short.MAX_VALUE : 0) + (value & Short.MAX_VALUE);
-    }
-
-    private static void printBytes(byte[] data) {
-        int i = 0;
-        while (i < data.length) {
-            int j = 0;
-            while (i < data.length && j < 4) {
-                System.out.print(String.format(" %02x", data[i]));
-                i++;
-                j++;
-            }
-            System.out.println();
-        }
     }
 
     public static void main(String[] args) throws IOException {
@@ -246,7 +229,7 @@ public class SimpleStun {
                     addr.getHostAddress(),
                     server.getPort()
                 ));
-                printBytes(data);
+                Utils.printBytes(data);
 
                 byte[] response = task.get();
                 System.out.println(String.format(
@@ -254,7 +237,7 @@ public class SimpleStun {
                     target.getAddress().getHostAddress(),
                     target.getPort()
                 ));
-                printBytes(response);
+                Utils.printBytes(response);
 
                 InetSocketAddress mapped = SimpleStun.parseResponse(ByteBuffer.wrap(response));
                 if (mapped != null) {
