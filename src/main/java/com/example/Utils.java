@@ -1,5 +1,6 @@
 package com.example;
 
+import java.net.InetSocketAddress;
 import java.net.InterfaceAddress;
 import java.net.NetworkInterface;
 import java.net.SocketException;
@@ -38,5 +39,11 @@ public class Utils {
             }
             System.out.println();
         }
+    }
+
+    public static InetSocketAddress parseAddress(String value) {
+        String[] split = value.split(":");
+        if (split.length != 2) return null;
+        return new InetSocketAddress(split[0], Integer.valueOf(split[1]));
     }
 }
