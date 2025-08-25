@@ -35,11 +35,11 @@ public class UdpConnectionManager implements AutoCloseable
     private List<Consumer<InetSocketAddress>> disconnectEventListener = new ArrayList<>();
     private List<Consumer<Entry<InetSocketAddress, byte[]>>> receiveEventListener = new ArrayList<>();
     private List<Consumer<Entry<InetSocketAddress, Exception>>> errorEventListener = new ArrayList<>();
-    private Map<InetSocketAddress, Consumer<InetSocketAddress>> connectEventListeners = new HashMap<>();
-    private Map<InetSocketAddress, Consumer<InetSocketAddress>> keepaliveTimeoutEventListeners = new HashMap<>();
-    private Map<InetSocketAddress, Consumer<InetSocketAddress>> disconnectEventListeners = new HashMap<>();
-    private Map<InetSocketAddress, Consumer<Entry<InetSocketAddress, byte[]>>> receiveEventListeners = new HashMap<>();
-    private Map<InetSocketAddress, Consumer<Entry<InetSocketAddress, Exception>>> errorEventListeners = new HashMap<>();
+    private Map<InetSocketAddress, Runnable> connectEventListeners = new HashMap<>();
+    private Map<InetSocketAddress, Runnable> keepaliveTimeoutEventListeners = new HashMap<>();
+    private Map<InetSocketAddress, Runnable> disconnectEventListeners = new HashMap<>();
+    private Map<InetSocketAddress, Consumer<byte[]>> receiveEventListeners = new HashMap<>();
+    private Map<InetSocketAddress, Consumer<Exception>> errorEventListeners = new HashMap<>();
     private List<Consumer<Exception>> globalErrorEventListener = new ArrayList<>();
 
     private final Thread receiver = new Thread(() -> {
@@ -135,23 +135,23 @@ public class UdpConnectionManager implements AutoCloseable
         this.errorEventListener.add(listener);
         return this;
     }
-    public UdpConnectionManager onConnect(InetSocketAddress addr, Consumer<InetSocketAddress> listener) {
+    public UdpConnectionManager onConnect(InetSocketAddress addr, Runnable listener) {
         this.connectEventListeners.put(addr, listener);
         return this;
     }
-    public UdpConnectionManager onKeepAliveTimeout(InetSocketAddress addr, Consumer<InetSocketAddress> listener) {
+    public UdpConnectionManager onKeepAliveTimeout(InetSocketAddress addr, Runnable listener) {
         this.keepaliveTimeoutEventListeners.put(addr, listener);
         return this;
     }
-    public UdpConnectionManager onDisconnect(InetSocketAddress addr, Consumer<InetSocketAddress> listener) {
+    public UdpConnectionManager onDisconnect(InetSocketAddress addr, Runnable listener) {
         this.disconnectEventListeners.put(addr, listener);
         return this;
     }
-    public UdpConnectionManager onReceive(InetSocketAddress addr, Consumer<Entry<InetSocketAddress, byte[]>> listener) {
+    public UdpConnectionManager onReceive(InetSocketAddress addr, Consumer<byte[]> listener) {
         this.receiveEventListeners.put(addr, listener);
         return this;
     }
-    public UdpConnectionManager onError(InetSocketAddress addr, Consumer<Entry<InetSocketAddress, Exception>> listener) {
+    public UdpConnectionManager onError(InetSocketAddress addr, Consumer<Exception> listener) {
         this.errorEventListeners.put(addr, listener);
         return this;
     }
@@ -169,7 +169,7 @@ public class UdpConnectionManager implements AutoCloseable
             listener -> new Thread(() -> listener.accept(addr), name).start()
         );
         if (this.connectEventListeners.containsKey(addr)) {
-            new Thread(() -> this.connectEventListeners.get(addr).accept(addr), name).start();
+            new Thread(() -> this.connectEventListeners.get(addr).run(), name).start();
         }
     }
     private void dispatchKeepAliveTimeoutEventListener(InetSocketAddress addr) {
@@ -182,7 +182,7 @@ public class UdpConnectionManager implements AutoCloseable
             listener -> new Thread(() -> listener.accept(addr), name).start()
         );
         if (this.keepaliveTimeoutEventListeners.containsKey(addr)) {
-            new Thread(() -> this.keepaliveTimeoutEventListeners.get(addr).accept(addr), name).start();
+            new Thread(() -> this.keepaliveTimeoutEventListeners.get(addr).run(), name).start();
         }
     }
     private void dispatchDisconnectEventListener(InetSocketAddress addr) {
@@ -195,7 +195,7 @@ public class UdpConnectionManager implements AutoCloseable
             listener -> new Thread(() -> listener.accept(addr), name).start()
         );
         if (this.disconnectEventListeners.containsKey(addr)) {
-            new Thread(() -> this.disconnectEventListeners.get(addr).accept(addr), name).start();
+            new Thread(() -> this.disconnectEventListeners.get(addr).run(), name).start();
         }
     }
     private void dispatchReceiveEventListener(InetSocketAddress addr, byte[] data) {
@@ -208,7 +208,7 @@ public class UdpConnectionManager implements AutoCloseable
             listener -> new Thread(() -> listener.accept(Map.entry(addr, data)), name).start()
         );
         if (this.receiveEventListeners.containsKey(addr)) {
-            new Thread(() -> this.receiveEventListeners.get(addr).accept(Map.entry(addr, data)), name).start();
+            new Thread(() -> this.receiveEventListeners.get(addr).accept(data), name).start();
         }
     }
     private void dispatchErrorEventListener(InetSocketAddress addr, Exception e) {
@@ -221,7 +221,7 @@ public class UdpConnectionManager implements AutoCloseable
             listener -> new Thread(() -> listener.accept(Map.entry(addr, e)), name).start()
         );
         if (this.errorEventListeners.containsKey(addr)) {
-            new Thread(() -> this.errorEventListeners.get(addr).accept(Map.entry(addr, e)), name).start();
+            new Thread(() -> this.errorEventListeners.get(addr).accept(e), name).start();
         }
     }
     private void dispatchErrorEventListener(Exception e) {
