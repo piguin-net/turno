@@ -247,7 +247,7 @@ public class SimpleStun {
                         mapped.getPort()
                     ));
                 } else {
-                    System.out.println("error.");
+                    System.err.println("error.");
                 }
             } catch (Exception e) {
                 e.printStackTrace();

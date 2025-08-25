@@ -323,7 +323,7 @@ public class UdpConnectionManager implements AutoCloseable
                     // keepalive
                 }
             }).onError(entry -> {
-                System.out.println(String.format(
+                System.err.println(String.format(
                     "%tT [onError] %s:%d %s(%s)",
                     new Date(),
                     entry.getKey().getAddress().getHostAddress(),
@@ -332,7 +332,7 @@ public class UdpConnectionManager implements AutoCloseable
                     entry.getValue().getMessage()
                 ));
             }).onGlobalError(e -> {
-                System.out.println(String.format(
+                System.err.println(String.format(
                     "%tT [onError] %s(%s)",
                     new Date(),
                     e.getClass().getName(),
@@ -367,7 +367,7 @@ public class UdpConnectionManager implements AutoCloseable
                     }
                 }
             }).onError(entry -> {
-                System.out.println(String.format(
+                System.err.println(String.format(
                     "%tT [onError] %s:%d %s(%s)",
                     new Date(),
                     entry.getKey().getAddress().getHostAddress(),
@@ -376,7 +376,7 @@ public class UdpConnectionManager implements AutoCloseable
                     entry.getValue().getMessage()
                 ));
             }).onGlobalError(e -> {
-                System.out.println(String.format(
+                System.err.println(String.format(
                     "%tT [onError] %s(%s)",
                     new Date(),
                     e.getClass().getName(),
