@@ -25,6 +25,7 @@ public class UdpConnectionManager implements AutoCloseable
     private DatagramChannel channel;
     private boolean active = false;
     private int interval = 1_000;
+    private Map<InetSocketAddress, Integer> intervals = new HashMap<>();
     private Supplier<ByteBuffer> generator = () -> ByteBuffer.allocate(0);
     private Map<InetSocketAddress, Supplier<ByteBuffer>> generators = new HashMap<>();
     // private int connectionTimeout = 3 * 60_000;
@@ -41,6 +42,7 @@ public class UdpConnectionManager implements AutoCloseable
     private Map<InetSocketAddress, Consumer<byte[]>> receiveEventListeners = new HashMap<>();
     private Map<InetSocketAddress, Consumer<Exception>> errorEventListeners = new HashMap<>();
     private List<Consumer<Exception>> globalErrorEventListener = new ArrayList<>();
+    private Map<InetSocketAddress, Thread> keepalive = new HashMap<>();
 
     private final Thread receiver = new Thread(() -> {
         while (this.active) {
@@ -50,10 +52,15 @@ public class UdpConnectionManager implements AutoCloseable
                 if (socket instanceof InetSocketAddress addr) {
                     byte[] data = new byte[buffer.flip().limit()];
                     buffer.get(data);
-                    if (!this.peers.containsKey(addr) || this.peers.get(addr) < 0) {
+                    boolean isUnknown = !this.peers.containsKey(addr);
+                    boolean isFirst = isUnknown || this.peers.get(addr) < 0;
+                    this.peers.put(addr, new Date().getTime());
+                    if (isUnknown) {
+                        this.startKeepalive(addr);
+                    }
+                    if (isFirst) {
                         this.dispatchConnectEventListener(addr);
                     }
-                    this.peers.put(addr, new Date().getTime());
                     boolean self = Utils.getSiteLocalNetworkInterfaces().values().stream().anyMatch(
                         addrs -> addrs.contains(addr.getAddress().getHostAddress())
                     );
@@ -70,37 +77,12 @@ public class UdpConnectionManager implements AutoCloseable
         }
     });
 
-    private final Thread keepalive = new Thread(() -> {
-        while (this.active) {
-            try {
-                for (InetSocketAddress addr: this.peers.keySet()) {
-                    if (this.isKeepAliveTimeout(addr)) {
-                        this.peers.put(addr, -1 * new Date().getTime());
-                        this.dispatchKeepAliveTimeoutEventListener(addr);
-                    }
-                    try {
-                        if (this.generators.containsKey(addr)) {
-                            this.channel.send(this.generators.get(addr).get(), addr);
-                        } else {
-                            this.channel.send(this.generator.get(), addr);
-                        }
-                    } catch (Exception e) {
-                        if (this.active) {
-                            this.dispatchErrorEventListener(addr, e);
-                        }
-                    }
-                }
-                Thread.sleep(this.interval);
-            } catch (Exception e) {
-                if (this.active) {
-                    this.dispatchErrorEventListener(e);
-                }
-            }
-        }
-    });
-
     public UdpConnectionManager setKeepAliveInterval(int interval) {
         this.interval = interval;
+        return this;
+    }
+    public UdpConnectionManager setKeepAliveInterval(InetSocketAddress addr, int interval) {
+        this.intervals.put(addr, interval);
         return this;
     }
     public UdpConnectionManager setKeepAliveTimeout(int timeout) {
@@ -234,14 +216,12 @@ public class UdpConnectionManager implements AutoCloseable
     public UdpConnectionManager() throws IOException {
         this.channel = DatagramChannel.open();
         this.channel.configureBlocking(false);
-        this.receiver.setName(String.format("UdpConnectionManager ReceiverThread(%d)", this.getPort()));
-        this.keepalive.setName(String.format("UdpConnectionManager KeepAliveThread(%d)", this.getPort()));
+        this.receiver.setName(String.format("UdpConnectionManager ReceiverThread(:%d)", this.getPort()));
     }
 
     public UdpConnectionManager setPort(int port) throws SocketException {
         this.channel.socket().bind(new InetSocketAddress(port));
-        this.receiver.setName(String.format("UdpConnectionManager ReceiverThread(%d)", this.getPort()));
-        this.keepalive.setName(String.format("UdpConnectionManager KeepAliveThread(%d)", this.getPort()));
+        this.receiver.setName(String.format("UdpConnectionManager ReceiverThread(:%d)", this.getPort()));
         return this;
     }
 
@@ -263,9 +243,50 @@ public class UdpConnectionManager implements AutoCloseable
         this.channel.send(buffer, addr);
     }
 
+    private void startKeepalive(InetSocketAddress addr) {
+        String name = String.format(
+            "UdpConnectionManager KeepAliveThread(%s:%d)",
+            addr.getAddress().getHostAddress(),
+            addr.getPort()
+        );
+        Thread thread = new Thread(() -> {
+            while (this.keepalive.containsKey(addr)) {
+                try {
+                    if (this.isKeepAliveTimeout(addr)) {
+                        this.peers.put(addr, -1 * new Date().getTime());
+                        this.dispatchKeepAliveTimeoutEventListener(addr);
+                    }
+                    try {
+                        if (this.generators.containsKey(addr)) {
+                            this.channel.send(this.generators.get(addr).get(), addr);
+                        } else {
+                            this.channel.send(this.generator.get(), addr);
+                        }
+                    } catch (Exception e) {
+                        if (this.active) {
+                            this.dispatchErrorEventListener(addr, e);
+                        }
+                    }
+                    if (this.intervals.containsKey(addr)) {
+                        Thread.sleep(this.intervals.get(addr));
+                    } else {
+                        Thread.sleep(this.interval);
+                    }
+                } catch (Exception e) {
+                    if (this.active) {
+                        this.dispatchErrorEventListener(e);
+                    }
+                }
+            }
+        }, name);
+        this.keepalive.put(addr, thread);
+        if (this.active) thread.start();
+    }
+
     public void connectAsync(InetSocketAddress addr) {
         if (!this.peers.containsKey(addr)) {
             this.peers.put(addr, -1 * new Date().getTime());
+            this.startKeepalive(addr);
         }
     }
 
@@ -278,7 +299,14 @@ public class UdpConnectionManager implements AutoCloseable
 
     public void disconnect(InetSocketAddress addr) {
         this.peers.remove(addr);
+        this.intervals.remove(addr);
         this.generators.remove(addr);
+        this.connectEventListeners.remove(addr);
+        this.keepaliveTimeoutEventListeners.remove(addr);
+        this.disconnectEventListeners.remove(addr);
+        this.receiveEventListeners.remove(addr);
+        this.errorEventListeners.remove(addr);
+        this.keepalive.remove(addr);
         this.dispatchDisconnectEventListener(addr);
     }
 
@@ -286,8 +314,9 @@ public class UdpConnectionManager implements AutoCloseable
         for (NetworkInterface nic: Utils.getSiteLocalNetworkInterfaces().keySet()) {
             this.channel.join(group, nic);
         }
-        // TODO: 汚い
-        this.peers.put(new InetSocketAddress(group, this.getPort()), Long.MAX_VALUE);
+        InetSocketAddress addr = new InetSocketAddress(group, this.getPort());
+        this.peers.put(addr, Long.MAX_VALUE); // TODO: 汚い
+        this.startKeepalive(addr);
         return this;
     }
 
@@ -304,14 +333,20 @@ public class UdpConnectionManager implements AutoCloseable
     public void start() {
         this.active = true;
         this.receiver.start();
-        this.keepalive.start();
+        this.keepalive.values().forEach(thread -> {
+            if (!thread.isAlive()) {
+                thread.start();
+            }
+        });
     }
 
     @Override
     public void close() throws InterruptedException, IOException {
         this.active = false;
         this.receiver.join();
-        this.keepalive.join();
+        List<Thread> threads = new ArrayList<>(this.keepalive.values());
+        this.keepalive.clear();
+        for (Thread thread: threads) thread.join();
         this.channel.close();
     }
 
@@ -362,20 +397,18 @@ public class UdpConnectionManager implements AutoCloseable
                 }
             }).onError(entry -> {
                 System.err.println(String.format(
-                    "%tT [onError] %s:%d %s(%s)",
+                    "%tT [onError] %s:%d",
                     new Date(),
                     entry.getKey().getAddress().getHostAddress(),
-                    entry.getKey().getPort(),
-                    entry.getValue().getClass().getName(),
-                    entry.getValue().getMessage()
+                    entry.getKey().getPort()
                 ));
+                entry.getValue().printStackTrace();
             }).onGlobalError(e -> {
                 System.err.println(String.format(
-                    "%tT [onError] %s(%s)",
-                    new Date(),
-                    e.getClass().getName(),
-                    e.getMessage()
+                    "%tT [onError]",
+                    new Date()
                 ));
+                e.printStackTrace();
             }).start();
 
             multicast.setPort(
@@ -406,20 +439,18 @@ public class UdpConnectionManager implements AutoCloseable
                 }
             }).onError(entry -> {
                 System.err.println(String.format(
-                    "%tT [onError] %s:%d %s(%s)",
+                    "%tT [onError] %s:%d",
                     new Date(),
                     entry.getKey().getAddress().getHostAddress(),
-                    entry.getKey().getPort(),
-                    entry.getValue().getClass().getName(),
-                    entry.getValue().getMessage()
+                    entry.getKey().getPort()
                 ));
+                entry.getValue().printStackTrace();
             }).onGlobalError(e -> {
                 System.err.println(String.format(
-                    "%tT [onError] %s(%s)",
-                    new Date(),
-                    e.getClass().getName(),
-                    e.getMessage()
+                    "%tT [onError]",
+                    new Date()
                 ));
+                e.printStackTrace();
             }).start();
 
             try (BufferedReader input = new BufferedReader(new InputStreamReader(System.in));) {
@@ -427,7 +458,10 @@ public class UdpConnectionManager implements AutoCloseable
                     String message = input.readLine();
                     if (message == null || "".equals(message.trim())) break;
                     for (InetSocketAddress addr: manager.getActiveConnections()) {
-                        manager.send(message.getBytes(Charset.defaultCharset()), addr);
+                        // TODO: groupは分けて管理
+                        if (!group.equals(addr.getAddress().getHostAddress())) {
+                            manager.send(message.getBytes(Charset.defaultCharset()), addr);
+                        }
                     }
                 }
             } catch (Exception e) {
