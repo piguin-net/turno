@@ -12,6 +12,13 @@
         },
         {
             "type": "java",
+            "name": "Main",
+            "request": "launch",
+            "mainClass": "com.example.Main",
+            "projectName": "turno"
+        },
+        {
+            "type": "java",
             "name": "UdpConnectionManager",
             "request": "launch",
             "mainClass": "com.example.UdpConnectionManager",

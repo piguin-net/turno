@@ -46,7 +46,7 @@
           </descriptorRefs>
           <archive>
             <manifest>
-              <mainClass>com.example.UdpConnectionManager</mainClass>
+              <mainClass>com.example.Main</mainClass>
             </manifest>
           </archive>
         </configuration>
