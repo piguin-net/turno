@@ -26,6 +26,7 @@ public class UdpConnectionManager implements AutoCloseable
     private boolean active = false;
     private int interval = 1_000;
     private Supplier<ByteBuffer> generator = () -> ByteBuffer.allocate(0);
+    private Map<InetSocketAddress, Supplier<ByteBuffer>> generators = new HashMap<>();
     // private int connectionTimeout = 3 * 60_000;
     private int keepaliveTimeout = 3_000;
     private Map<InetSocketAddress, Long> peers = new HashMap<>();
@@ -73,7 +74,11 @@ public class UdpConnectionManager implements AutoCloseable
                         this.dispatchKeepAliveTimeoutEventListener(addr);
                     }
                     try {
-                        this.channel.send(this.generator.get(), addr);
+                        if (this.generators.containsKey(addr)) {
+                            this.channel.send(this.generators.get(addr).get(), addr);
+                        } else {
+                            this.channel.send(this.generator.get(), addr);
+                        }
                     } catch (Exception e) {
                         if (this.active) {
                             this.dispatchErrorEventListener(addr, e);
@@ -99,6 +104,10 @@ public class UdpConnectionManager implements AutoCloseable
     }
     public UdpConnectionManager setKeepAliveData(Supplier<ByteBuffer> generator) {
         this.generator = generator;
+        return this;
+    }
+    public UdpConnectionManager setKeepAliveData(InetSocketAddress addr, Supplier<ByteBuffer> generator) {
+        this.generators.put(addr, generator);
         return this;
     }
     public UdpConnectionManager onConnect(Consumer<InetSocketAddress> listener) {
@@ -241,6 +250,7 @@ public class UdpConnectionManager implements AutoCloseable
 
     public void disconnect(InetSocketAddress addr) {
         this.peers.remove(addr);
+        this.generators.remove(addr);
         this.dispatchDisconnectEventListener(addr);
     }
 
