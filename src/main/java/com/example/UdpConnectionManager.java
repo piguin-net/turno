@@ -66,9 +66,10 @@ public class UdpConnectionManager implements AutoCloseable
 
     private final Thread keepalive = new Thread(() -> {
         while (this.active) {
-            for (InetSocketAddress addr: this.peers.keySet()) {
-                try {
+            try {
+                for (InetSocketAddress addr: this.peers.keySet()) {
                     if (this.isKeepAliveTimeout(addr)) {
+                        this.peers.put(addr, -1 * new Date().getTime());
                         this.dispatchKeepAliveTimeoutEventListener(addr);
                     }
                     try {
@@ -78,11 +79,11 @@ public class UdpConnectionManager implements AutoCloseable
                             this.dispatchErrorEventListener(addr, e);
                         }
                     }
-                    Thread.sleep(this.interval);
-                } catch (InterruptedException e) {
-                    if (this.active) {
-                        this.dispatchErrorEventListener(e);
-                    }
+                }
+                Thread.sleep(this.interval);
+            } catch (InterruptedException e) {
+                if (this.active) {
+                    this.dispatchErrorEventListener(e);
                 }
             }
         }
