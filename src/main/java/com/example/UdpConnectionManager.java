@@ -81,7 +81,7 @@ public class UdpConnectionManager implements AutoCloseable
                     }
                 }
                 Thread.sleep(this.interval);
-            } catch (InterruptedException e) {
+            } catch (Exception e) {
                 if (this.active) {
                     this.dispatchErrorEventListener(e);
                 }
