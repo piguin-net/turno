@@ -62,7 +62,7 @@ public class UdpConnectionManager implements AutoCloseable
                 }
             }
         }
-    }, "UdpConnectionManager ReceiverThread");
+    });
 
     private final Thread keepalive = new Thread(() -> {
         while (this.active) {
@@ -87,7 +87,7 @@ public class UdpConnectionManager implements AutoCloseable
                 }
             }
         }
-    }, "UdpConnectionManager KeepAliveThread");
+    });
 
     public UdpConnectionManager setKeepAliveInterval(int interval) {
         this.interval = interval;
@@ -197,10 +197,14 @@ public class UdpConnectionManager implements AutoCloseable
     public UdpConnectionManager() throws IOException {
         this.channel = DatagramChannel.open();
         this.channel.configureBlocking(false);
+        this.receiver.setName(String.format("UdpConnectionManager ReceiverThread(%d)", this.getPort()));
+        this.keepalive.setName(String.format("UdpConnectionManager KeepAliveThread(%d)", this.getPort()));
     }
 
     public UdpConnectionManager setPort(int port) throws SocketException {
         this.channel.socket().bind(new InetSocketAddress(port));
+        this.receiver.setName(String.format("UdpConnectionManager ReceiverThread(%d)", this.getPort()));
+        this.keepalive.setName(String.format("UdpConnectionManager KeepAliveThread(%d)", this.getPort()));
         return this;
     }
 
