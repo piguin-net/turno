@@ -275,6 +275,7 @@ public class UdpConnectionManager implements AutoCloseable
     public static void main( String[] args ) throws InterruptedException, IOException
     {
         Integer port = Integer.getInteger("chat.port", 9625);
+        String group = System.getProperty("chat.group", "224.0.0.1");
 
         try (
             UdpConnectionManager manager = new UdpConnectionManager();
@@ -337,7 +338,7 @@ public class UdpConnectionManager implements AutoCloseable
             multicast.setPort(
                 port
             ).joinGroup(
-                InetAddress.getByName("224.0.0.1")
+                InetAddress.getByName(group)
             ).setKeepAliveData(
                 () -> {
                     return ByteBuffer.allocate(2).putShort(manager.getPort().shortValue()).flip();
@@ -346,7 +347,7 @@ public class UdpConnectionManager implements AutoCloseable
                 if (receive.getValue().length == 2) {
                     InetSocketAddress addr = new InetSocketAddress(
                         receive.getKey().getAddress(),
-                        ByteBuffer.wrap(receive.getValue()).getShort()
+                        Utils.ushort2int(ByteBuffer.wrap(receive.getValue()).getShort())
                     );
                     if (!manager.getAllConnections().contains(addr)) {
                         System.out.println(String.format(
